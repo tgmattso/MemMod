@@ -11,27 +11,48 @@
 #endif
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <stdatomic.h>
 
 #define Niters   10000000
+#define Ntries   100
 #define Nthreads 2
+#define BIG      100000000000.0  // larger than any time I'd measure
+#define TINY     0.0000000001    // smaller than any time I'd measure
+//#define DEBUG    1
+
+
+// function to compute a standard deviation from sum 
+// of values (sumxi) and sum of values sqaured (sumxisq)
+double stdev(int N, double sumxi, double sumxisq)
+{
+   double ave, stdev;
+   if(N<2) return -1.0;  // must have 2 or more samples
+
+   ave = sumxi/(double)N;
+   stdev = (double)N*ave*ave + sumxisq - 2*ave*sumxi;
+   stdev = stdev/(double)(N-1);
+
+   return sqrt(stdev);
+}
 
 int main()
 {
-  double runtime;
-  int *A, sumCons=0, sumProd=0;
-  int numthreads, flag = -1;
+  double rtsum=0.0, rtsqsum=0.0, rtmin=BIG, rtmax=TINY, rtsdev;  
+  double runtime0, runtime1;
+  double *A, sumCons=0, sumProd=0;
+  int numthreads, ierr=0, flag = -1;
 
   omp_set_num_threads(Nthreads);
 
   // A an array of values
-  A = (int*)malloc(Niters*sizeof(double));
+  A = (double*)malloc(Niters*sizeof(double));
 
-  runtime = omp_get_wtime();
   #pragma omp parallel shared(numthreads, flag, A, sumProd, sumCons)
   {
     int id = omp_get_thread_num();
-    int iters, flag_temp;
+    int itries, iters, flag_temp;
+    double runtime, runstart;
 
     // Exit if we didn't get the two threads we asked for
     if(id==0){
@@ -43,41 +64,75 @@ int main()
     }
     #pragma omp barrier
 
-    //  the producer thread
-    if(id == 0){
-       for(iters = 0; iters<Niters; iters++){
-          *(A+iters) = iters;
-//  Deepack suggested the following atomi_fetch_add_explicit()
-//          #pragma omp atomic release
-//             ++flag;
+    for (itries=0;itries<Ntries;itries++){
+
+       // setup flags and sums for next try
+       #pragma omp single
+       {
+         flag = -1;
+         sumProd = 0.0;
+         sumCons = 0.0;
+         for(iters=0; iters<Niters; iters++) *(A+iters) = 0.0;   
+       }
+
+       //  the producer thread
+       if(id == 0){
+          runtime0 = omp_get_wtime();
+          for(iters = 0; iters<Niters; iters++){
+             *(A+iters) = iters;
+ 
 //atomic_fetch_add_explicit((atomic_int_t *)&flag, 1,memory_order_release);
 atomic_fetch_add_explicit((atomic_int *)&flag, 1,memory_order_release);
-          sumProd += *(A+iters);
+  
+             sumProd += *(A+iters);
+          }
        }
-    }
 
-    // The consumer thread
-    if(id == 1) {
-       for(iters = 0; iters<Niters; iters++){
-          while(1){
-//  Deepack suggested the following atomi_fetch_add_explicit()
-//             #pragma omp atomic read acquire
-//                 flag_temp=flag;
+       // The consumer thread
+       if(id == 1) {
+          runtime1 = omp_get_wtime();
+          for(iters = 0; iters<Niters; iters++){
+             while(1){
 //flag_temp = atomic_load_explicit((atomic_int_t *)&flag, memory_order_acquire);
 flag_temp = atomic_load_explicit((atomic_int *)&flag, memory_order_acquire);
-             if(flag_temp >= iters)break;
+                if(flag_temp >= iters)break;
+             }
+             sumCons += *(A+iters);
           }
-          sumCons += *(A+iters);
+
+          // collect timing statistics on the consumer
+          // since it has to finish last. 
+          runtime = omp_get_wtime();
+          runstart=((runtime0<runtime1)?runtime0:runtime1);
+          runtime = runtime-runstart;
+          if(runtime > rtmax) rtmax = runtime;
+          if(runtime < rtmin) rtmin = runtime;
+          rtsum   += runtime;
+          rtsqsum += runtime*runtime;
+          #ifdef DEBUG
+             printf("%d, runtime=%f, max=%f, min=%f, rtsum=%f, rtsqsum=%f\n",
+                    itries,runtime,rtmax,rtmin,rtsum, rtsqsum);
+          #endif
+       }  
+       #pragma omp barrier
+
+       // test results 
+       #pragma omp single
+       {
+          if (sumProd != sumCons){
+            printf(" sums don't match: Prod=%d, Cons=%d\n",sumProd, sumCons);
+            ierr++;
+          }
        }
-    }  
+    }
   }
-  runtime = omp_get_wtime() - runtime;
-  if (sumProd != sumCons)printf(" sums don't match: Prod=%d, Cons=%d\n",
-          sumProd, sumCons);
+  printf("\n C11 atomics with no other flushes\n");
+  printf("Pipeline done with %d threads and %d errors \n",numthreads,ierr);
+  rtsdev = stdev(Ntries, rtsum, rtsqsum);
 
-  printf("\n C11 release-acquire, no flushes\n);
-  printf("Pipeline done with %d threads in %lf secs",numthreads,runtime);
-  printf(" SUMS:  Prod=%d, Cons=%d \n", sumProd, sumCons);
-
+  printf("%d trials, ave=%f, stdev=%f, min=%f, max=%f\n", (int)Ntries,
+        (float)(rtsum/Ntries), (float)rtsdev, (float)rtmin, (float)rtmax);
 }
+ 
+
  

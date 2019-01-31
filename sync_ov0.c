@@ -71,6 +71,7 @@ int main()
          flag = -1;
          sumProd = 0.0;
          sumCons = 0.0;
+         for(iters=0; iters<Niters; iters++) *(A+iters) = 0.0;   
        }
 
        //  the producer thread
@@ -116,7 +117,7 @@ int main()
        #pragma omp barrier
 
        // test results 
-       #pragma omp master
+       #pragma omp single
        {
           if (sumProd != sumCons){
             printf(" sums don't match: Prod=%d, Cons=%d\n",sumProd, sumCons);

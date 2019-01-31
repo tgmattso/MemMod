@@ -1,6 +1,9 @@
 # 
 include make.def
 
+#
+# I have an EXES that omits sync_ov3 since that doesn't compile
+# 
 EXES= sync_ov1$(EXE) sync_ov2$(EXE) sync_ov0$(EXE) 
 #EXES= sync_ov1$(EXE) sync_ov2$(EXE) sync_ov3$(EXE) sync_ov0$(EXE) 
 
